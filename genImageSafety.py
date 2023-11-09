@@ -3,22 +3,96 @@ import os
 import io
 import base64
 import hashlib
+from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
 from Crypto.Cipher import AES
 from PIL import Image, PngImagePlugin
 from azure.ai.contentsafety import ContentSafetyClient
 from azure.core.credentials import AzureKeyCredential
+from azure.core.exceptions import HttpResponseError
 from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData
 
-global image_path
-development = 1
+def main():
+    load_dotenv()
+    development = 1
+    
+    def image_Gen():
+        load_dotenv()
+        global filename
+        os.chdir(os.getenv("SD_output"))
+        SD_url = os.getenv("SD_url")
 
-while True:
+        t_delta = datetime.timedelta(hours=9)
+        JST = datetime.timezone(t_delta, "JST")
+
+        key = os.getenv("sharedKEY")
+        print("QRコードをかざしてください：", end="")
+        QR_input = input().strip()
+        iv = QR_input[:24]
+        crypted = QR_input[24:]
+
+        # KEYからダイジェスト計算
+        key_dg = hashlib.sha256(key.encode()).digest()
+        # AES-256-CBC 復号化
+        cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
+        # Base64エンコードされたデータをデコード
+        crypted = base64.b64decode(crypted)
+        # 復号化
+        prompt = cipher.decrypt(crypted)
+        # パディングを取り除く（もしあれば）
+        prompt = prompt.rstrip(b"\0")
+        # バイト列を文字列に変換
+        prompt = prompt.decode("utf-8")
+        print(prompt)
+        global user_id
+        user_id = prompt.split(",")[0][1:]
+
+        payload = {
+            "prompt": prompt,
+            "seed": -1,
+            "batch_size": 1,
+            "steps": 20,
+            "cfg_scale": 7,
+            "width": 1000,
+            "height": 1000,
+            "negative_prompt": "EasyNegative",
+            "s_noise": 1,
+            "script_args": [],
+            "sampler_index": "Euler a",
+        }
+        print("生成中...")
+        response = requests.post(url=f"{SD_url}/sdapi/v1/txt2img", json=payload)
+        r = response.json()
+
+        # pngに情報を書き込み
+        for i in r["images"]:
+            image = Image.open(io.BytesIO(base64.b64decode(i.split(",", 1)[0])))
+
+            png_payload = {"image": "data:image/png;base64," + i}
+            response2 = requests.post(url=f"{SD_url}/sdapi/v1/png-info", json=png_payload)
+            pnginfo = PngImagePlugin.PngInfo()
+            if development:
+                pnginfo.add_text("parameters", response2.json().get("info"))
+            else:
+                pnginfo.add_text("Created by ", os.getenv("AUTHER"))
+            # pnginfo.add_text("safetyInfo", safetyResult)
+            now = datetime.datetime.now(JST)
+            filename = str(now.strftime("%Y%m%d%H%M%S") + ".jpg")
+            image.save(filename, "JPEG", quality=98, pnginfo=pnginfo)
+            global image_path
+            image_path = os.path.join(filename)
+            
+        print("Image Generated!\n")
+        if development:
+            upload_image()
+        else:
+            analyze_image()
+        
     def analyze_image():
         print("SafetyCheckStarted.")
-        endpoint = os.environ.get("CONTENT_SAFETY_ENDPOINT")
-        key = os.environ.get("CONTENT_SAFETY_KEY")
+        key = os.getenv("AZURE_KEY1")
+        endpoint = os.getenv("AZURE_ENDPOINT")
 
         # Create an Content Safety client
         client = ContentSafetyClient(endpoint, AzureKeyCredential(key))
@@ -38,109 +112,33 @@ while True:
                 raise
             print(e)
             raise
-
-        if response.hate_result:
-            print(f"Hate severity: {response.hate_result.severity}")
-        if response.self_harm_result:
-            print(f"SelfHarm severity: {response.self_harm_result.severity}")
-        if response.sexual_result:
-            print(f"Sexual severity: {response.sexual_result.severity}")
-        if response.violence_result:
-            print(f"Violence severity: {response.violence_result.severity}")
-        upload_image()
-
+        try:
+            if response.hate_result.severity != 0:
+                raise Exception(f"差別的なコンテンツが検出されました レベル：{response.hate_result.severity}")
+            if response.self_harm_result.severity != 0:
+                raise Exception(f"自傷的なコンテンツが検出されました レベル：{response.self_harm_result.severity}")
+            if response.sexual_result.severity != 0:
+                raise Exception(f"性的なコンテンツが検出されました レベル：{response.sexual_result.severity}")
+            if response.violence_result.severity != 0:
+                raise Exception(f"暴力的なコンテンツが検出されました レベル：{response.violence_result.severity}")
+        except Exception as e:
+            print(e)
+            image_Gen()
+        else:
+            upload_image()
 
     def upload_image():
-        # user_id = input("ユーザIDを入力してん")
-        url = "http://10.50.218.104:3000/users/" + user_id + "/updatePicture"
+        WEB_url = os.getenv("WEB_URL") + user_id + "/updatePicture"
 
         files = {"picture": open(image_path, "rb")}
-        response = requests.patch(url, auth=HTTPBasicAuth("user", "pass"), files=files)
+        response = requests.patch(WEB_url, auth=HTTPBasicAuth(os.getenv("UPLOAD_USER"), os.getenv("UPLOAD_PASS")), files=files)
 
         if response.status_code == 200:
             print("Update successful")
         else:
             print("Update failed")
+    while True:
+        image_Gen()
 
-
-    global filename
-    os.chdir("C://Users//2023odagiri-PJ//Documents//SD2_CUI//outputs")
-
-    # stableDiffusionのURL
-    url = "http://127.0.0.1:7860"
-
-    # 時刻のイニシャライズ
-    t_delta = datetime.timedelta(hours=9)
-    JST = datetime.timezone(t_delta, "JST")
-    now = datetime.datetime.now(JST)
-
-    key = b"Enter your key here"
-    print("QRコードをかざしてください：", end="")
-    QR_input = input().strip()
-    # 暗号鍵と初期化ベクトル（IV）
-    iv = QR_input[:24]
-    print(iv)
-    crypted = QR_input[24:]
-    print(crypted)
-
-    # KEYからダイジェスト計算
-    key_dg = hashlib.sha256(key).digest()
-
-    # AES-256-CBC 復号化
-    cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
-
-    # Base64エンコードされたデータをデコード
-    crypted = base64.b64decode(crypted)
-
-    # 復号化
-    prompt = cipher.decrypt(crypted)
-
-    # パディングを取り除く（もしあれば）
-    prompt = prompt.rstrip(b"\0")
-
-    # バイト列を文字列に変換
-    prompt = prompt.decode("utf-8")
-    prompt = "Cool colors, Van Gogh, sunset, artificial, stained glass, collage, bust shot, tilt-shift lens、Foliage、Camouflage、Moss、Outdoor、Lush"
-    print(prompt)
-    global user_id
-    user_id = prompt.split(",")[0][1:]
-    print("31")
-
-    payload = {
-        "prompt": prompt,
-        "seed": -1,
-        "batch_size": 1,
-        "steps": 20,
-        "cfg_scale": 7,
-        "width": 1000,
-        "height": 1000,
-        "negative_prompt": "EasyNegative",
-        "s_noise": 1,
-        "script_args": [],
-        "sampler_index": "Euler a",
-    }
-    print("生成中...")
-    response = requests.post(url=f"{url}/sdapi/v1/txt2img", json=payload)
-    r = response.json()
-
-    # pngに情報を書き込み
-    for i in r["images"]:
-        image = Image.open(io.BytesIO(base64.b64decode(i.split(",", 1)[0])))
-
-        png_payload = {"image": "data:image/png;base64," + i}
-        response2 = requests.post(url=f"{url}/sdapi/v1/png-info", json=png_payload)
-        pnginfo = PngImagePlugin.PngInfo()
-        if development:
-            pnginfo.add_text("parameters", response2.json().get("info"))
-        else:
-            pnginfo.add_text("Created by ", "小田切プロジェクト2023")
-        # pnginfo.add_text("safetyInfo", safetyResult)
-        filename = str(now.strftime("%Y%m%d%H%M%S") + ".jpg")
-        image.save(filename, "JPEG", quality=98, pnginfo=pnginfo)
-        image_path = os.path.join(filename)
-
-    print("Done!\n")
-    if development:
-        upload_image()
-    else:
-        analyze_image()
+if __name__ == "__main__":
+    main()
