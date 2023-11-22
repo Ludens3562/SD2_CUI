@@ -1,5 +1,6 @@
 import datetime
 import os
+import subprocess
 import io
 import base64
 import hashlib
@@ -13,10 +14,12 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData
 
+
 def main():
+    subprocess.Popen(["run.bat"])
     load_dotenv()
     development = 1
-    
+
     def image_Gen():
         load_dotenv()
         global filename
@@ -82,13 +85,13 @@ def main():
             image.save(filename, "JPEG", quality=98, pnginfo=pnginfo)
             global image_path
             image_path = os.path.join(filename)
-            
+
         print("Image Generated!\n")
         if development:
             upload_image()
         else:
             analyze_image()
-        
+
     def analyze_image():
         print("SafetyCheckStarted.")
         key = os.getenv("AZURE_KEY1")
@@ -131,14 +134,18 @@ def main():
         WEB_url = os.getenv("WEB_URL") + user_id + "/updatePicture"
 
         files = {"picture": open(image_path, "rb")}
-        response = requests.patch(WEB_url, auth=HTTPBasicAuth(os.getenv("UPLOAD_USER"), os.getenv("UPLOAD_PASS")), files=files)
+        response = requests.patch(
+            WEB_url, auth=HTTPBasicAuth(os.getenv("UPLOAD_USER"), os.getenv("UPLOAD_PASS")), files=files
+        )
 
         if response.status_code == 200:
             print("Update successful")
         else:
             print("Update failed")
+
     while True:
         image_Gen()
+
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,4 @@
-/gen.py
-/imageSafety.py
-/json_load.py
-/outputs
-/TEST.PY
+*.png
+*.jpg
 /tempCodeRunnerFile.py
 .env
