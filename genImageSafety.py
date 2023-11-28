@@ -13,105 +13,141 @@ from azure.ai.contentsafety import ContentSafetyClient
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData
+from openai import OpenAI
 
 
 def main():
+    # プリントサブシステム開始
     subprocess.Popen(["run.bat"])
     load_dotenv()
+    os.chdir(os.getenv("SD_output"))
+    SD_url = os.getenv("SD_url")
+    t_delta = datetime.timedelta(hours=9)
+    JST = datetime.timezone(t_delta, "JST")
     development = 1
 
-    def image_Gen():
+    def decrypt(param):
+        # param 0 = SD and DALLE3
+        # param 1 = SD
+        # param 2 = DALLE3
         load_dotenv()
-        global filename
-        os.chdir(os.getenv("SD_output"))
-        SD_url = os.getenv("SD_url")
-
-        t_delta = datetime.timedelta(hours=9)
-        JST = datetime.timezone(t_delta, "JST")
-
         key = os.getenv("sharedKEY")
         print("QRコードをかざしてください：", end="")
-        QR_input = input().strip()
-        iv = QR_input[:24]
-        crypted = QR_input[24:]
-
-        # KEYからダイジェスト計算
-        key_dg = hashlib.sha256(key.encode()).digest()
-        # AES-256-CBC 復号化
-        cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
-        # Base64エンコードされたデータをデコード
-        crypted = base64.b64decode(crypted)
+        input_raw = input().strip()
+        iv = input_raw[:24]
+        pt_data = input_raw[24:]
         # 復号化
-        prompt = cipher.decrypt(crypted)
-        # パディングを取り除く（もしあれば）
+        key_dg = hashlib.sha256(key.encode()).digest()
+        cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
+        pt_data = base64.b64decode(pt_data)
+        prompt = cipher.decrypt(pt_data)
         prompt = prompt.rstrip(b"\0")
-        # バイト列を文字列に変換
         prompt = prompt.decode("utf-8")
         print(prompt)
-        global user_id
         user_id = prompt.split(",")[0][1:]
 
+        if param == 0:
+            SD_imageGen(prompt, user_id)
+            DALLE3_imageGen(prompt, user_id)
+        elif param == 1:
+            SD_imageGen(prompt, user_id)
+        elif param == 2:
+            DALLE3_imageGen(prompt, user_id)
+        else:
+            print("パラメータの値が不正です")
+
+    def SD_imageGen(prompt, id):
         payload = {
             "prompt": prompt,
             "seed": -1,
             "batch_size": 1,
-            "steps": 20,
+            "steps": 30,
             "cfg_scale": 7,
-            "width": 1000,
-            "height": 1000,
+            "width": 1024,
+            "height": 1024,
             "negative_prompt": "EasyNegative",
             "s_noise": 1,
             "script_args": [],
             "sampler_index": "Euler a",
         }
-        print("生成中...")
+        print("SD2_生成中...")
         response = requests.post(url=f"{SD_url}/sdapi/v1/txt2img", json=payload)
         r = response.json()
 
         # pngに情報を書き込み
         for i in r["images"]:
             image = Image.open(io.BytesIO(base64.b64decode(i.split(",", 1)[0])))
-
             png_payload = {"image": "data:image/png;base64," + i}
-            response2 = requests.post(url=f"{SD_url}/sdapi/v1/png-info", json=png_payload)
             pnginfo = PngImagePlugin.PngInfo()
             if development:
+                # プロンプトデータAPI取得
+                response2 = requests.post(url=f"{SD_url}/sdapi/v1/png-info", json=png_payload)
                 pnginfo.add_text("parameters", response2.json().get("info"))
             else:
                 pnginfo.add_text("Created by ", os.getenv("AUTHER"))
             # pnginfo.add_text("safetyInfo", safetyResult)
             now = datetime.datetime.now(JST)
-            filename = str(now.strftime("%Y%m%d%H%M%S") + ".jpg")
+            filename = str("SD" + id + "-" + now.strftime("%Y%m%d%H%M%S") + ".jpg")
             image.save(filename, "JPEG", quality=98, pnginfo=pnginfo)
-            global image_path
             image_path = os.path.join(filename)
 
-        print("Image Generated!\n")
+        print("SD_Image Generated!\n")
         if development:
-            upload_image()
+            upload_image(0, id, image_path)
         else:
-            analyze_image()
+            if isSafetyImage(image_path):
+                upload_image(0, id, image_path)
+            else:
+                os.rename(filename, "【NG】" + filename)
+                decrypt(1)
 
-    def analyze_image():
-        print("SafetyCheckStarted.")
+    def DALLE3_imageGen(prompt, id):
+        OpenAI.API_KEY = os.getenv("OPENAI_API_KEY")
+        client = OpenAI()
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="standard",
+            style="natural",
+            response_format="b64_json",
+            n=1,
+            user="SD2_CUI" + "_" + id,
+        )
+        # image_url = response.data[0].url
+        print(response)
+        image_data = base64.b64decode(response.data[0].b64_json)
+        image = Image.open(io.BytesIO(image_data))
+        now = datetime.datetime.now(JST)
+        filename = str("DE" + id + "-" + +now.strftime("%Y%m%d%H%M%S") + ".jpg")
+        image.save(filename)
+        image_path = os.path.join(filename)
+
+        if development:
+            upload_image(1, id, image_path)
+        else:
+            if isSafetyImage(image_path):
+                upload_image(1, id, image_path)
+            else:
+                os.rename(filename, "【NG】" + filename)
+                decrypt(2)
+
+    def isSafetyImage(image_path):
+        print("SafetyCheckStarted.\n")
         key = os.getenv("AZURE_KEY1")
         endpoint = os.getenv("AZURE_ENDPOINT")
 
-        # Create an Content Safety client
         client = ContentSafetyClient(endpoint, AzureKeyCredential(key))
-
-        # Build request
         with open(image_path, "rb") as file:
             request = AnalyzeImageOptions(image=ImageData(content=file.read()))
 
-        # Analyze image
         try:
             response = client.analyze_image(request)
         except HttpResponseError as e:
             print("Analyze image failed.")
             if e.error:
                 print(f"Error code: {e.error.code}")
-                print(f"Error message: {e.error.message}")
+                print(f"Error message: {e.error.message}\n")
                 raise
             print(e)
             raise
@@ -126,12 +162,19 @@ def main():
                 raise Exception(f"暴力的なコンテンツが検出されました レベル：{response.violence_result.severity}")
         except Exception as e:
             print(e)
-            image_Gen()
+            return False
         else:
-            upload_image()
+            return True
 
-    def upload_image():
-        WEB_url = os.getenv("WEB_URL") + user_id + "/updatePicture"
+    def upload_image(param, id, image_path):
+        # param 1 = SD image
+        # param 2 = DALLE3 image
+        if param == 0:
+            WEB_url = os.getenv("WEB_URL") + id + "/updatePicture"
+        if param == 1:
+            WEB_url = os.getenv("WEB_URL") + id + "/updatePicture_dall"
+        else:
+            print("パラメータの値が不正です")
 
         files = {"picture": open(image_path, "rb")}
         response = requests.patch(
@@ -141,10 +184,10 @@ def main():
         if response.status_code == 200:
             print("Update successful")
         else:
-            print("Update failed")
+            print("UploadError\n statuscode:" + response.status_code)
 
     while True:
-        image_Gen()
+        decrypt(2)
 
 
 if __name__ == "__main__":
