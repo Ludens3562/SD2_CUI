@@ -4,6 +4,7 @@ import subprocess
 import io
 import base64
 import hashlib
+import asyncio
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
@@ -26,37 +27,36 @@ def main():
     JST = datetime.timezone(t_delta, "JST")
     development = 1
 
-    def decrypt(param):
-        # param 0 = SD and DALLE3
-        # param 1 = SD
-        # param 2 = DALLE3
+    async def decrypt(param):
         load_dotenv()
-        key = os.getenv("sharedKEY")
         print("QRコードをかざしてください：", end="")
         input_raw = input().strip()
         iv = input_raw[:24]
         pt_data = input_raw[24:]
         # 復号化
+        key = os.getenv("sharedKEY")
         key_dg = hashlib.sha256(key.encode()).digest()
         cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
         pt_data = base64.b64decode(pt_data)
-        prompt = cipher.decrypt(pt_data)
-        prompt = prompt.rstrip(b"\0")
+        prompt = cipher.decrypt(pt_data).rstrip(b"\0")
         prompt = prompt.decode("utf-8")
         print(prompt)
         user_id = prompt.split(",")[0][1:]
 
+        # param 0 = SD and DALLE3
+        # param 1 = SD
+        # param 2 = DALLE3
         if param == 0:
-            SD_imageGen(prompt, user_id)
-            DALLE3_imageGen(prompt, user_id)
+            await SD_imageGen(prompt, user_id)
+            await DALLE3_imageGen(prompt, user_id)
         elif param == 1:
             SD_imageGen(prompt, user_id)
         elif param == 2:
             DALLE3_imageGen(prompt, user_id)
         else:
-            print("パラメータの値が不正です")
+            print("decryptパラメータの値が不正です")
 
-    def SD_imageGen(prompt, id):
+    async def SD_imageGen(prompt, id):
         payload = {
             "prompt": prompt,
             "seed": -1,
@@ -65,12 +65,12 @@ def main():
             "cfg_scale": 7,
             "width": 1024,
             "height": 1024,
-            "negative_prompt": "EasyNegative",
+            "negative_prompt": "negativeXL_D",
             "s_noise": 1,
             "script_args": [],
             "sampler_index": "Euler a",
         }
-        print("SD2_生成中...")
+        print("SD2_生成中…")
         response = requests.post(url=f"{SD_url}/sdapi/v1/txt2img", json=payload)
         r = response.json()
 
@@ -91,7 +91,7 @@ def main():
             image.save(filename, "JPEG", quality=98, pnginfo=pnginfo)
             image_path = os.path.join(filename)
 
-        print("SD_Image Generated!\n")
+        print("SD_Image Saved!\n")
         if development:
             upload_image(0, id, image_path)
         else:
@@ -101,9 +101,10 @@ def main():
                 os.rename(filename, "【NG】" + filename)
                 decrypt(1)
 
-    def DALLE3_imageGen(prompt, id):
+    async def DALLE3_imageGen(prompt, id):
         OpenAI.API_KEY = os.getenv("OPENAI_API_KEY")
         client = OpenAI()
+        print("DALL・E_生成中…")
         response = client.images.generate(
             model="dall-e-3",
             prompt=prompt,
@@ -119,9 +120,10 @@ def main():
         image_data = base64.b64decode(response.data[0].b64_json)
         image = Image.open(io.BytesIO(image_data))
         now = datetime.datetime.now(JST)
-        filename = str("DE" + id + "-" + +now.strftime("%Y%m%d%H%M%S") + ".jpg")
+        filename = str("DE" + id + "-" + now.strftime("%Y%m%d%H%M%S") + ".jpg")
         image.save(filename)
         image_path = os.path.join(filename)
+        print("DALLe_Image Saved!\n")
 
         if development:
             upload_image(1, id, image_path)
@@ -169,14 +171,15 @@ def main():
     def upload_image(param, id, image_path):
         # param 1 = SD image
         # param 2 = DALLE3 image
-        if param == 0:
-            WEB_url = os.getenv("WEB_URL") + id + "/updatePicture"
         if param == 1:
+            WEB_url = os.getenv("WEB_URL") + id + "/updatePicture"
+            files = {"picture": open(image_path, "rb")}
+        elif param == 0:
             WEB_url = os.getenv("WEB_URL") + id + "/updatePicture_dall"
+            files = {"picture_dall": open(image_path, "rb")}
         else:
-            print("パラメータの値が不正です")
+            print("uploadパラメータの値が不正です")
 
-        files = {"picture": open(image_path, "rb")}
         response = requests.patch(
             WEB_url, auth=HTTPBasicAuth(os.getenv("UPLOAD_USER"), os.getenv("UPLOAD_PASS")), files=files
         )
@@ -187,7 +190,7 @@ def main():
             print("UploadError\n statuscode:" + response.status_code)
 
     while True:
-        decrypt(2)
+        asyncio.run(decrypt(0))
 
 
 if __name__ == "__main__":
