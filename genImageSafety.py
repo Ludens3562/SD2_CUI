@@ -1,20 +1,20 @@
-import datetime
-import os
-import subprocess
-import io
 import base64
+import datetime
 import hashlib
-import asyncio
-from dotenv import load_dotenv
+import io
+import os
 import requests
-from requests.auth import HTTPBasicAuth
+import subprocess
+import threading
 from Crypto.Cipher import AES
 from PIL import Image, PngImagePlugin
 from azure.ai.contentsafety import ContentSafetyClient
+from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
-from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData
+from dotenv import load_dotenv
 from openai import OpenAI
+from requests.auth import HTTPBasicAuth
 
 
 def main():
@@ -25,9 +25,9 @@ def main():
     SD_url = os.getenv("SD_url")
     t_delta = datetime.timedelta(hours=9)
     JST = datetime.timezone(t_delta, "JST")
-    development = 1
+    development = 0
 
-    async def decrypt(param):
+    def decrypt(param):
         load_dotenv()
         print("QRコードをかざしてください：", end="")
         input_raw = input().strip()
@@ -47,8 +47,12 @@ def main():
         # param 1 = SD
         # param 2 = DALLE3
         if param == 0:
-            await SD_imageGen(prompt, user_id)
-            await DALLE3_imageGen(prompt, user_id)
+            thread_SD = threading.Thread(target=SD_imageGen, args=(prompt, user_id))
+            thread_DALLE3 = threading.Thread(target=DALLE3_imageGen, args=(prompt, user_id))
+            thread_SD.start()
+            thread_DALLE3.start()
+            thread_SD.join()
+            thread_DALLE3.join()
         elif param == 1:
             SD_imageGen(prompt, user_id)
         elif param == 2:
@@ -56,7 +60,7 @@ def main():
         else:
             print("decryptパラメータの値が不正です")
 
-    async def SD_imageGen(prompt, id):
+    def SD_imageGen(prompt, id):
         payload = {
             "prompt": prompt,
             "seed": -1,
@@ -65,7 +69,7 @@ def main():
             "cfg_scale": 7,
             "width": 1024,
             "height": 1024,
-            "negative_prompt": "negativeXL_D",
+            "negative_prompt": "EasyNegative",
             "s_noise": 1,
             "script_args": [],
             "sampler_index": "Euler a",
@@ -101,7 +105,7 @@ def main():
                 os.rename(filename, "【NG】" + filename)
                 decrypt(1)
 
-    async def DALLE3_imageGen(prompt, id):
+    def DALLE3_imageGen(prompt, id):
         OpenAI.API_KEY = os.getenv("OPENAI_API_KEY")
         client = OpenAI()
         print("DALL・E_生成中…")
@@ -115,8 +119,7 @@ def main():
             n=1,
             user="SD2_CUI" + "_" + id,
         )
-        # image_url = response.data[0].url
-        print(response)
+        # print(response)
         image_data = base64.b64decode(response.data[0].b64_json)
         image = Image.open(io.BytesIO(image_data))
         now = datetime.datetime.now(JST)
@@ -171,10 +174,10 @@ def main():
     def upload_image(param, id, image_path):
         # param 1 = SD image
         # param 2 = DALLE3 image
-        if param == 1:
+        if param == 0:
             WEB_url = os.getenv("WEB_URL") + id + "/updatePicture"
             files = {"picture": open(image_path, "rb")}
-        elif param == 0:
+        elif param == 1:
             WEB_url = os.getenv("WEB_URL") + id + "/updatePicture_dall"
             files = {"picture_dall": open(image_path, "rb")}
         else:
@@ -190,7 +193,7 @@ def main():
             print("UploadError\n statuscode:" + response.status_code)
 
     while True:
-        asyncio.run(decrypt(0))
+        decrypt(0)
 
 
 if __name__ == "__main__":
