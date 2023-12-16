@@ -5,6 +5,7 @@ import io
 import os
 import requests
 import subprocess
+import socket
 import threading
 from Crypto.Cipher import AES
 from PIL import Image, PngImagePlugin
@@ -22,53 +23,71 @@ def main():
     subprocess.Popen(["run.bat"])
     load_dotenv()
     os.chdir(os.getenv("SD_output"))
-    SD_url = os.getenv("SD_url")
     t_delta = datetime.timedelta(hours=9)
     JST = datetime.timezone(t_delta, "JST")
     development = 0
 
+    # 音楽サーバーへの接続
+    server_ip = "10.50.140.6"
+    server_port = 49162
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect((server_ip, server_port))
+    print("successfully connected to music server.")
+
     def decrypt(param):
         load_dotenv()
         print("QRコードをかざしてください：", end="")
-        input_raw = input().strip()
-        iv = input_raw[:24]
-        pt_data = input_raw[24:]
-        # 復号化
-        key = os.getenv("sharedKEY")
-        key_dg = hashlib.sha256(key.encode()).digest()
-        cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
-        pt_data = base64.b64decode(pt_data)
-        prompt = cipher.decrypt(pt_data).rstrip(b"\0")
-        prompt = prompt.decode("utf-8")
-        print(prompt)
-        user_id = prompt.split(",")[0][1:]
+        try:
+            input_raw = input().strip()
+            iv = input_raw[:24]
+            pt_data = input_raw[24:]
+            # 復号化
+            key = os.getenv("sharedKEY")
+            key_dg = hashlib.sha256(key.encode()).digest()
+            cipher = AES.new(key_dg, AES.MODE_CBC, base64.b64decode(iv))
+            pt_data = base64.b64decode(pt_data)
+            prompt = cipher.decrypt(pt_data).rstrip(b"\0")
+            prompt = prompt.decode("utf-8")
+            prompt = prompt[1:-1].split(",")
+            print(prompt)
+            user_id = prompt[0]
+            print(user_id)
+            gen_prompt = ", ".join(prompt[1:-2])
+            print(gen_prompt)
+            global audio
+            audio = ", ".join(prompt[-2:])
+            print(audio)
+        except Exception as e:
+            print(e)
+            decrypt(0)
 
         # param 0 = SD and DALLE3
         # param 1 = SD
         # param 2 = DALLE3
         if param == 0:
-            thread_SD = threading.Thread(target=SD_imageGen, args=(prompt, user_id))
-            thread_DALLE3 = threading.Thread(target=DALLE3_imageGen, args=(prompt, user_id))
+            thread_SD = threading.Thread(target=SD_imageGen, args=(gen_prompt, user_id))
+            thread_DALLE3 = threading.Thread(target=DALLE3_imageGen, args=(gen_prompt, user_id))
             thread_SD.start()
             thread_DALLE3.start()
             thread_SD.join()
             thread_DALLE3.join()
         elif param == 1:
-            SD_imageGen(prompt, user_id)
+            SD_imageGen(gen_prompt, user_id)
         elif param == 2:
-            DALLE3_imageGen(prompt, user_id)
+            DALLE3_imageGen(gen_prompt, user_id)
         else:
             print("decryptパラメータの値が不正です")
 
     def SD_imageGen(prompt, id):
+        SD_url = os.getenv("SD_url")
         payload = {
             "prompt": prompt,
             "seed": -1,
             "batch_size": 1,
             "steps": 30,
             "cfg_scale": 7,
-            "width": 1024,
-            "height": 1024,
+            "width": 1000,
+            "height": 1480,
             "negative_prompt": "EasyNegative",
             "s_noise": 1,
             "script_args": [],
@@ -101,6 +120,7 @@ def main():
         else:
             if isSafetyImage(image_path):
                 upload_image(0, id, image_path)
+                client_socket.send(audio.encode("utf-8"))
             else:
                 os.rename(filename, "【NG】" + filename)
                 decrypt(1)
@@ -108,11 +128,12 @@ def main():
     def DALLE3_imageGen(prompt, id):
         OpenAI.API_KEY = os.getenv("OPENAI_API_KEY")
         client = OpenAI()
+        prompt
         print("DALL・E_生成中…")
         response = client.images.generate(
             model="dall-e-3",
             prompt=prompt,
-            size="1024x1024",
+            size="1792x1024",
             quality="standard",
             style="natural",
             response_format="b64_json",
@@ -133,6 +154,7 @@ def main():
         else:
             if isSafetyImage(image_path):
                 upload_image(1, id, image_path)
+                client_socket.send(audio.encode("utf-8"))
             else:
                 os.rename(filename, "【NG】" + filename)
                 decrypt(2)
@@ -175,10 +197,15 @@ def main():
         # param 1 = SD image
         # param 2 = DALLE3 image
         if param == 0:
-            WEB_url = os.getenv("WEB_URL") + id + "/updatePicture"
+            print("param =0")
+            WEB_url = os.getenv("WEB_URL") + "users/" + id + "/updatePicture"
             files = {"picture": open(image_path, "rb")}
+            image_path = "C://Users//ODPJ2023//Documents//SD2_CUI//outputs//SD9-20231214155717.jpg"
+            command = ["powershell.exe", "-Command", "Start-Process -FilePath {image_path}s -Verb Print"]
+            subprocess.run(command, capture_output=True)
+
         elif param == 1:
-            WEB_url = os.getenv("WEB_URL") + id + "/updatePicture_dall"
+            WEB_url = os.getenv("WEB_URL") + "users/" + id + "/updatePicture_dall"
             files = {"picture_dall": open(image_path, "rb")}
         else:
             print("uploadパラメータの値が不正です")
@@ -190,7 +217,7 @@ def main():
         if response.status_code == 200:
             print("Update successful")
         else:
-            print("UploadError\n statuscode:" + response.status_code)
+            print(response.status_code)
 
     while True:
         decrypt(0)

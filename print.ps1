@@ -15,8 +15,10 @@ $action = {
     while ($retryPrintCount -lt $maxRetry) {
         try {
             # 印刷ジョブをキューに追加する
-            Start-Process -FilePath "mspaint.exe" -ArgumentList "/p `"$path`"" -NoNewWindow -Wait
+            # Start-Process -FilePath "mspaint.exe" -ArgumentList "/p `"$path`"" -NoNewWindow -Wait
+            Start-Process -FilePath $path -Verb Print
             Write-Host "印刷ジョブがキューに追加されました。$file"
+            Start-Sleep -Seconds 5
             break  # 印刷成功したらループを終了してファイル移動処理へ
         }
         catch {
@@ -37,6 +39,7 @@ $action = {
 
     while (-not $moveSuccess -and $retryMoveCount -lt $maxRetry) {
         try {
+            Start-Sleep -Seconds 5
             Move-Item -Path $path -Destination $printedFolder -ErrorAction Stop
             $moveSuccess = $true
         }
